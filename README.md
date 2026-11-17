@@ -57,6 +57,10 @@ Todo se puede apagar con los ajustes «Animaciones de lanzamiento» y «Reemplaz
 - Rasgo `recovery`: si falla vuelve a la mano; si acierta va al objetivo.
 - Un ítem con el flag `flags.pf2e-throw-weapon.mode` en `ignore` se salta; en `consume` solo se resta 1 sin mover nada.
 
+## API para otros módulos
+
+`game.modules.get("pf2e-throw-weapon").api.dropToFloor(tokenDoc, itemData, item?)` deja un ítem en el piso con las mismas reglas (casilla contigua libre, reutiliza la pila si ya hay una, animación de caída). Lo usa PF2E - Fane's Fourberie para esparcir el mazo con Fane's Escape. Lanza un error si faltan Item Piles / Item Piles: PF2e.
+
 ## Notas
 
 - Para el resultado automático hay que **marcar un objetivo** (target) antes de atacar.

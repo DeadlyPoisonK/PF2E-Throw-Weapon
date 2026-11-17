@@ -31,6 +31,13 @@ const MISS = ["failure", "criticalFailure"];
 const REQUIRED = { "item-piles": "Item Piles", "itempiles-pf2e": "Item Piles: PF2e" };
 
 Hooks.once("init", () => {
+  // API para otros modulos (p. ej. PF2E - Fane's Fourberie esparce el mazo con Fane's Escape).
+  game.modules.get(ID).api = {
+    dropToFloor: async (tokenDoc, data, item = null) => {
+      if (!piles()) throw new Error("Faltan Item Piles / Item Piles: PF2e");
+      return dropToFloor(tokenDoc, data, tokenDoc, item);
+    },
+  };
   const reg = (key, name, hint, def) =>
     game.settings.register(ID, key, { name, hint, scope: "world", config: true, type: Boolean, default: def });
   reg("hitToTarget", "Al acertar, el arma pasa al objetivo", "Si esta desactivado, un arma que acierta se pierde (solo se resta del lanzador).", true);
