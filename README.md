@@ -37,6 +37,19 @@ https://github.com/DeadlyPoisonK/PF2E-Throw-Weapon/releases/latest/download/modu
 | Al fallar, el arma queda en el piso | Si se desactiva, un arma que falla se pierde. |
 | Desequipar el montón al lanzar | El montón pasa de la mano a `worn` al lanzar. |
 | Aviso del resultado | Mensaje arriba (por defecto), tarjeta solo para GM, tarjeta pública o nada. |
+| Animaciones de lanzamiento | Activa o apaga todas las animaciones de este módulo. |
+| Reemplazar el golpe cuerpo a cuerpo de Automated Animations | Cambia el golpe cuerpo a cuerpo de un arma lanzada por un proyectil. |
+
+## Animaciones (opcionales)
+
+Si **Sequencer** está activo (los proyectiles usan además las animaciones de **JB2A**; con la versión gratuita funcionan las que existen en ella):
+
+- **Cartas** (stacks de [PF2E - Fane's Fourberie](https://github.com/DeadlyPoisonK/PF2E-Fanes-Fourberie)): proyectil de carta (`jb2a.ranged.card`). Al crear el stack se apaga la animación automática de Automated Animations (que mostraría una daga) para no duplicar.
+- **Armas lanzadas** que Automated Animations anima con un golpe cuerpo a cuerpo (lanza, cuchillo arrojadizo): ese golpe se corta y se reemplaza por un proyectil parecido (daga o flecha). Si ya hay una animación de proyectil de Automated Animations (dardo, daga, jabalina), no se agrega otra.
+- **Sin animación parecida** (por ejemplo, hacha arrojadiza): se deja lo que ya haga Automated Animations; si no hay nada, no se anima.
+- **Caída al piso**: cuando el arma queda en el piso, el icono del arma vuela girando desde el objetivo hasta la casilla de la pila.
+
+Todo se puede apagar con los ajustes «Animaciones de lanzamiento» y «Reemplazar el golpe cuerpo a cuerpo de Automated Animations». Si falta una animación en tu instalación de JB2A, simplemente no se anima.
 
 ## Excepciones
 

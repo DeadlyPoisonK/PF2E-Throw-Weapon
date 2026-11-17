@@ -36,6 +36,8 @@ Hooks.once("init", () => {
   reg("hitToTarget", "Al acertar, el arma pasa al objetivo", "Si esta desactivado, un arma que acierta se pierde (solo se resta del lanzador).", true);
   reg("missToFloor", "Al fallar, el arma queda en el piso", "Crea (o completa) un Item Pile en una casilla contigua al objetivo. Si esta desactivado, un arma que falla se pierde.", true);
   reg("unequip", "Desequipar el monton al lanzar", "Lanzar un arma la saca de la mano: si el monton estaba en la mano ('held'), pasa a 'worn' aunque queden unidades.", true);
+  reg("animations", "Animaciones de lanzamiento", "Solo si Sequencer esta activo (los proyectiles ademas usan JB2A): proyectil de carta para las cartas de Fane's Fourberie, proyectil de reemplazo si no hay animacion adecuada, y animacion de caida al piso.", true);
+  reg("replaceMelee", "Reemplazar el golpe cuerpo a cuerpo de Automated Animations", "Si un arma lanzada con proyectil similar (lanza, cuchillo arrojadizo) recibe de Automated Animations una animacion de golpe cuerpo a cuerpo, se cambia por un proyectil.", true);
   game.settings.register(ID, "notify", {
     name: "Aviso del resultado",
     hint: "Como se avisa a donde fue el arma. 'Arriba' no agrega nada al chat.",
@@ -57,6 +59,16 @@ Hooks.once("ready", () => {
     if (game.user.isGM && data?.text) ui.notifications.info(data.text);
   });
   if (game.user.isGM && missingDeps().length) warnDeps();
+  if (game.modules.get("sequencer")?.active) Hooks.on("createSequencerEffect", onSequencerEffect);
+});
+
+// Las cartas de Fane's Fourberie llevan flags.pf2e-throw-weapon.animation = "card": se les apaga la animacion
+// automatica de Automated Animations (que mostraria una daga) porque este modulo reproduce la de carta.
+// AA ignora flags sin `version` igual o mayor a su esquema (5), por eso se escribe junto con killAnim.
+const AA_FLAGS_VERSION = 5;
+Hooks.on("preCreateItem", (item, data) => {
+  if (data?.flags?.[ID]?.animation !== "card" || !animOn() || !hasPath(PATHS.card)) return;
+  item.updateSource({ "flags.autoanimations": { version: AA_FLAGS_VERSION, killAnim: true } });
 });
 
 Hooks.on("createChatMessage", (message, _options, userId) => {
@@ -104,6 +116,14 @@ async function handleAttack(message) {
 
   // Esperar la animacion de Dice So Nice antes de actuar o avisar (no adelantar el resultado).
   // Solo si la pestana esta visible (en segundo plano la animacion no corre) y con tope de 15 s.
+  const seenAt = performance.now();
+  const outcome = ctx.outcome ?? null;
+  const targetToken = ctx.target?.token ? await fromUuid(ctx.target.token) : null;
+  const thrower = actorToken(actor, message);
+  const kind = projectileKind(item);
+  // Antes de esperar el dado: si Automated Animations pone un golpe cuerpo a cuerpo a un arma lanzada, se reemplaza.
+  if (targetToken && kind && kind !== "card" && animOn() && setting("replaceMelee")) markPending(targetToken.id);
+
   if (game.dice3d?.waitFor3DAnimationByMessageID && document.visibilityState === "visible") {
     try {
       await Promise.race([
@@ -115,9 +135,8 @@ async function handleAttack(message) {
     }
   }
 
-  const outcome = ctx.outcome ?? null;
-  const targetToken = ctx.target?.token ? await fromUuid(ctx.target.token) : null;
-
+  // Proyectil propio (solo si Automated Animations no animo ya este lanzamiento, o para las cartas).
+  await playProjectile({ kind, thrower, targetToken, seenAt });
   let action;
   if (mode === "consume") action = "lost";
   else if (targetToken && outcome) action = HIT.includes(outcome) ? "hit" : MISS.includes(outcome) ? "miss" : "ask";
@@ -138,7 +157,6 @@ async function handleAttack(message) {
   if (data.flags) delete data.flags[ID];
 
   let result;
-  const thrower = actorToken(actor, message);
   if (action === "hit") {
     const holder = targetToken?.actor;
     if (setting("hitToTarget") && holder?.isOfType(...HOLDER_TYPES)) {
@@ -146,18 +164,18 @@ async function handleAttack(message) {
       await piles().addItems(holder, [{ item: data, quantity: 1 }]);
       result = `acierta: pasa al inventario de ${targetToken.name}`;
     } else if (setting("missToFloor") && targetToken) {
-      await dropToFloor(targetToken, data, thrower);
+      await dropToFloor(targetToken, data, thrower, item);
       result = `acierta, pero ${targetToken.name} no puede llevarla: cae al piso`;
     } else result = "acierta y el arma se pierde";
   } else if (action === "miss") {
     const where = targetToken ?? thrower;
     if (setting("missToFloor") && where) {
-      await dropToFloor(where, data, thrower);
+      await dropToFloor(where, data, thrower, item);
       result = targetToken ? `falla: cae al piso junto a ${targetToken.name}` : "cae al piso junto al lanzador";
     } else result = "falla y el arma se pierde";
   } else if (action === "floor") {
     if (thrower) {
-      await dropToFloor(thrower, data, thrower);
+      await dropToFloor(thrower, data, thrower, item);
       result = "cae al piso junto al lanzador";
     } else result = "el arma se pierde";
   } else result = mode === "consume" ? "se gasta (1 menos en el monton)" : "el arma se pierde";
@@ -192,7 +210,7 @@ function actorToken(actor, message) {
  *   2. Si no, crea uno nuevo en una casilla contigua libre (sin tokens y, de preferencia, sin muro de por
  *      medio); entre varias libres elige la mas cercana al lanzador. Si todas estan ocupadas, usa la del token.
  */
-async function dropToFloor(tokenDoc, data, throwerToken = null) {
+async function dropToFloor(tokenDoc, data, throwerToken = null, item = null) {
   const scene = tokenDoc.parent;
   const api = piles();
   const size = scene.grid.size;
@@ -205,6 +223,7 @@ async function dropToFloor(tokenDoc, data, throwerToken = null) {
     (t) => t.id !== tokenDoc.id && [...cands, own].some((c) => c.x === t.x && c.y === t.y) && api.isValidItemPile(t)
   );
   if (existing) {
+    await playLanding(item, tokenDoc, existing);
     await api.addItems(existing, [{ item: data, quantity: 1 }]);
     console.log(`${ID} | pila existente reutilizada: token id=${existing.id} uuid=${existing.uuid} en (${existing.x},${existing.y})`);
     return existing.uuid;
@@ -216,6 +235,7 @@ async function dropToFloor(tokenDoc, data, throwerToken = null) {
   const clear = free.filter((c) => !wallBetween(tokenDoc, c, size));
   const spot = clear[0] ?? free[0] ?? own;
 
+  await playLanding(item, tokenDoc, spot);
   const res = await api.createItemPile({ position: { x: spot.x, y: spot.y }, sceneId: scene.id, items: [data] });
   const tokenUuid = res?.tokenUuid ?? null;
   console.log(
@@ -285,6 +305,110 @@ async function ask(item, targetToken) {
     buttons,
     rejectClose: false,
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Animaciones (opcionales). Requieren Sequencer; los proyectiles ademas usan las animaciones de JB2A.
+// Si una ruta no existe en la instalacion de JB2A del usuario (version gratuita o Patreon), no se anima.
+// ---------------------------------------------------------------------------------------------
+const PATHS = {
+  card: "jb2a.ranged.card.01.projectile",
+  dagger: "jb2a.dagger.throw.01.white",
+  arrow: "jb2a.arrow.physical.white",
+};
+const animOn = () => !!setting("animations") && !!game.modules.get("sequencer")?.active && typeof globalThis.Sequence === "function";
+const hasPath = (p) => {
+  try {
+    return !!globalThis.Sequencer?.Database?.entryExists(p);
+  } catch (_e) {
+    return false;
+  }
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Proyectil parecido segun el arma: card | dagger | arrow | null (sin animacion similar: no se anima). */
+function projectileKind(item) {
+  if (item.flags?.[ID]?.animation === "card") return "card";
+  const base = item.system.baseItem;
+  const group = item.system.group;
+  if (group === "knife" || ["dagger", "kukri", "throwing-knife"].includes(base)) return "dagger";
+  if (["dart", "spear"].includes(group) || ["dart", "javelin", "spear", "longspear", "harpoon", "shuriken"].includes(base)) return "arrow";
+  return null;
+}
+
+const recentAA = []; // efectos recientes de Automated Animations
+const pending = new Map(); // id de token objetivo -> instante limite para reemplazar un golpe cuerpo a cuerpo
+const markPending = (targetId) => pending.set(targetId, performance.now() + 4000);
+
+function onSequencerEffect(effect) {
+  try {
+    const file = effect?.data?.file;
+    if (typeof file !== "string" || !file.startsWith("autoanimations.")) return;
+    const name = String(effect.data?.name ?? "");
+    const entry = { t: performance.now(), file, name, replaced: false };
+    for (const [id, until] of pending) {
+      if (performance.now() < until && file.startsWith("autoanimations.melee.") && name.includes(id)) {
+        entry.replaced = true;
+        setTimeout(() => {
+          try {
+            effect.endEffect?.();
+          } catch (_e) {
+            /* ya terminado */
+          }
+        }, 0);
+      }
+    }
+    recentAA.push(entry);
+    if (recentAA.length > 30) recentAA.shift();
+  } catch (_e) {
+    /* nunca romper a Sequencer */
+  }
+}
+
+/** Proyectil del lanzador al objetivo, solo si Automated Animations no animo ya este lanzamiento. */
+async function playProjectile({ kind, thrower, targetToken, seenAt }) {
+  if (!animOn() || !kind || !thrower?.object || !targetToken?.object) return false;
+  const path = PATHS[kind];
+  if (!hasPath(path)) return false;
+  const aaLive = recentAA.some((e) => e.t >= seenAt - 50 && e.name.includes(targetToken.id) && !e.replaced);
+  if (aaLive) return false;
+  try {
+    await Promise.race([
+      new Sequence().effect().file(path).atLocation(thrower.object).stretchTo(targetToken.object).waitUntilFinished().play(),
+      sleep(4000),
+    ]);
+    return true;
+  } catch (e) {
+    console.warn(`${ID} | la animacion del proyectil fallo`, e);
+    return false;
+  }
+}
+
+/** El icono del arma vuela (girando) desde el token hasta la casilla donde queda en el piso. */
+async function playLanding(item, fromTok, cell) {
+  if (!item || !animOn() || !fromTok?.parent) return;
+  const size = fromTok.parent.grid.size;
+  const center = (x, y, w, h) => ({ x: x + (w * size) / 2, y: y + (h * size) / 2 });
+  const from = center(fromTok.x, fromTok.y, fromTok.width, fromTok.height);
+  const to = center(cell.x, cell.y, 1, 1);
+  try {
+    await Promise.race([
+      new Sequence()
+        .effect()
+        .file(item.img)
+        .atLocation(from)
+        .moveTowards(to, { ease: "easeOutQuad" })
+        .duration(600)
+        .size(0.5, { gridUnits: true })
+        .animateProperty("sprite", "rotation", { from: 0, to: 360, duration: 600 })
+        .fadeOut(150)
+        .waitUntilFinished()
+        .play(),
+      sleep(3000),
+    ]);
+  } catch (e) {
+    console.warn(`${ID} | la animacion de caida fallo`, e);
+  }
 }
 
 /** Aviso del resultado segun el ajuste: toast (lanzador + GMs), tarjeta solo GM, tarjeta publica o nada. */
